@@ -58,51 +58,61 @@ class DocumentController extends Controller
             'storage' => 'in:s3,local',
         ]);
 
-        $file = $request->file('file');
-        $originalName = $file->getClientOriginalName();
-        $ext = $file->getClientOriginalExtension();
-        $sizeKb = (int) ceil($file->getSize() / 1024);
-        $storage = $request->input('storage', 's3');
+        try {
+            $file = $request->file('file');
+            $originalName = $file->getClientOriginalName();
+            $ext = $file->getClientOriginalExtension();
+            $sizeKb = (int) ceil($file->getSize() / 1024);
+            $storage = $request->input('storage', 's3');
 
-        if ($storage === 's3') {
-            // use local s3-compatible disk configured to point to local path
-            $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
-            Storage::disk('s3')->put($key, fopen($file->getRealPath(), 'r'));
-            $path = null;
-            $s3Key = $key;
-            $s3Bucket = config('filesystems.disks.s3.bucket');
-        } else {
-            $path = $file->store('documents', ['disk' => 'local']);
-            $s3Key = null;
-            $s3Bucket = null;
+            if ($storage === 's3') {
+                $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
+                $uploaded = Storage::disk('s3')->putFileAs(
+                    'documents/'.date('Y/m'),
+                    $file,
+                    Str::random(40).'.'.$ext
+                );
+                $path = null;
+                $s3Key = $uploaded;
+                $s3Bucket = config('filesystems.disks.s3.bucket');
+            } else {
+                $path = $file->store('documents', ['disk' => 'local']);
+                $s3Key = null;
+                $s3Bucket = null;
+            }
+
+            $doc = Document::create([
+                'source_id' => $request->input('source_id'),
+                'source_type' => $request->input('source_type'),
+                'document_type' => $request->input('document_type'),
+                'reg_date' => $request->input('reg_date'),
+                'document_no' => $request->input('document_no'),
+                'name' => $request->input('name'),
+                'version_no' => $request->input('version_no'),
+                'size_kb' => $sizeKb,
+                'ext' => $ext,
+                'original_name' => $originalName,
+                'path' => $path,
+                'has_expired' => $request->input('has_expired', false) == true ? 1 : 0,
+                'expired_date' => $request->input('expired_date'),
+                'storage' => $storage,
+                's3_key' => $s3Key,
+                's3_bucket' => $s3Bucket,
+                'status' => $request->input('status'),
+                'created_by' => $request->input('created_by'),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Document created successfully',
+                'data' => $doc,
+            ], 201);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create document: ' . $e->getMessage(),
+            ], 500);
         }
-
-        $doc = Document::create([
-            'source_id' => $request->input('source_id'),
-            'source_type' => $request->input('source_type'),
-            'document_type' => $request->input('document_type'),
-            'reg_date' => $request->input('reg_date'),
-            'document_no' => $request->input('document_no'),
-            'name' => $request->input('name'),
-            'version_no' => $request->input('version_no'),
-            'size_kb' => $sizeKb,
-            'ext' => $ext,
-            'original_name' => $originalName,
-            'path' => $path,
-            'has_expired' => $request->input('has_expired', false) == true ? 1 : 0,
-            'expired_date' => $request->input('expired_date'),
-            'storage' => $storage,
-            's3_key' => $s3Key,
-            's3_bucket' => $s3Bucket,
-            'status' => $request->input('status'),
-            'created_by' => $request->input('created_by'),
-        ]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Document created successfully',
-            'data' => $doc,
-        ], 201);
     }
 
     public function update(Request $request, $id)
@@ -114,6 +124,12 @@ class DocumentController extends Controller
 
         $doc = Document::findOrFail($id);
 
+        $request->validate([
+            'name' => 'sometimes|required|string',
+            'file' => 'sometimes|file',
+            'storage' => 'in:s3,local',
+        ]);
+
         $data = $request->only([
             'name','document_type','version_no','has_expired','expired_date','status'
         ]);
@@ -123,22 +139,34 @@ class DocumentController extends Controller
             $file = $request->file('file');
             $ext = $file->getClientOriginalExtension();
             $sizeKb = (int) ceil($file->getSize() / 1024);
+            $storage = $request->input('storage', $doc->storage);
 
-            if ($doc->storage === 's3') {
-                // delete old
-                if ($doc->s3_key) {
-                    Storage::disk('s3')->delete($doc->s3_key);
-                }
-                $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
-                Storage::disk('s3')->put($key, fopen($file->getRealPath(), 'r'));
-                $data['s3_key'] = $key;
-            } else {
-                if ($doc->path) {
-                    Storage::disk('local')->delete($doc->path);
-                }
-                $data['path'] = $file->store('documents', ['disk' => 'local']);
+            // delete old file
+            if ($doc->storage === 's3' && $doc->s3_key) {
+                Storage::disk('s3')->delete($doc->s3_key);
+            }
+            if ($doc->storage === 'local' && $doc->path) {
+                Storage::disk('local')->delete($doc->path);
             }
 
+            if ($storage === 's3') {
+                $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
+                Storage::disk('s3')->putFileAs(
+                    'documents/'.date('Y/m'),
+                    $file,
+                    Str::random(40).'.'.$ext
+                );
+                $data['s3_key'] = $key;
+                $data['s3_bucket'] = config('filesystems.disks.s3.bucket');
+                $data['path'] = null;
+            } else {
+                $path = $file->store('documents', ['disk' => 'local']);
+                $data['path'] = $path;
+                $data['s3_key'] = null;
+                $data['s3_bucket'] = null;
+            }
+
+            $data['storage'] = $storage;
             $data['ext'] = $ext;
             $data['size_kb'] = $sizeKb;
             $data['original_name'] = $file->getClientOriginalName();
