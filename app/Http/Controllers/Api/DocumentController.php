@@ -122,63 +122,70 @@ class DocumentController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthenticated (invalid or expired token)'], 401);
         }
 
-        $doc = Document::findOrFail($id);
+        try {
+            $doc = Document::findOrFail($id);
 
-        $request->validate([
-            'name' => 'sometimes|required|string',
-            'file' => 'sometimes|file',
-            'storage' => 'in:s3,local',
-        ]);
+            $request->validate([
+                'name' => 'sometimes|required|string',
+                'file' => 'sometimes|file',
+                'storage' => 'in:s3,local',
+            ]);
 
-        $data = $request->only([
-            'name','document_type','version_no','has_expired','expired_date','status'
-        ]);
+            $data = $request->only([
+                'name','document_type','version_no','has_expired','expired_date','status'
+            ]);
 
-        // optional file replace
-        if ($request->hasFile('file')) {
-            $file = $request->file('file');
-            $ext = $file->getClientOriginalExtension();
-            $sizeKb = (int) ceil($file->getSize() / 1024);
-            $storage = $request->input('storage', $doc->storage);
+            // optional file replace
+            if ($request->hasFile('file')) {
+                $file = $request->file('file');
+                $ext = $file->getClientOriginalExtension();
+                $sizeKb = (int) ceil($file->getSize() / 1024);
+                $storage = $request->input('storage', $doc->storage);
 
-            // delete old file
-            if ($doc->storage === 's3' && $doc->s3_key) {
-                Storage::disk('s3')->delete($doc->s3_key);
+                // delete old file
+                if ($doc->storage === 's3' && $doc->s3_key) {
+                    Storage::disk('s3')->delete($doc->s3_key);
+                }
+                if ($doc->storage === 'local' && $doc->path) {
+                    Storage::disk('local')->delete($doc->path);
+                }
+
+                if ($storage === 's3') {
+                    $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
+                    Storage::disk('s3')->putFileAs(
+                        'documents/'.date('Y/m'),
+                        $file,
+                        Str::random(40).'.'.$ext
+                    );
+                    $data['s3_key'] = $key;
+                    $data['s3_bucket'] = config('filesystems.disks.s3.bucket');
+                    $data['path'] = null;
+                } else {
+                    $path = $file->store('documents', ['disk' => 'local']);
+                    $data['path'] = $path;
+                    $data['s3_key'] = null;
+                    $data['s3_bucket'] = null;
+                }
+
+                $data['storage'] = $storage;
+                $data['ext'] = $ext;
+                $data['size_kb'] = $sizeKb;
+                $data['original_name'] = $file->getClientOriginalName();
             }
-            if ($doc->storage === 'local' && $doc->path) {
-                Storage::disk('local')->delete($doc->path);
-            }
 
-            if ($storage === 's3') {
-                $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
-                Storage::disk('s3')->putFileAs(
-                    'documents/'.date('Y/m'),
-                    $file,
-                    Str::random(40).'.'.$ext
-                );
-                $data['s3_key'] = $key;
-                $data['s3_bucket'] = config('filesystems.disks.s3.bucket');
-                $data['path'] = null;
-            } else {
-                $path = $file->store('documents', ['disk' => 'local']);
-                $data['path'] = $path;
-                $data['s3_key'] = null;
-                $data['s3_bucket'] = null;
-            }
+            $doc->update($data);
 
-            $data['storage'] = $storage;
-            $data['ext'] = $ext;
-            $data['size_kb'] = $sizeKb;
-            $data['original_name'] = $file->getClientOriginalName();
+            return response()->json([
+                'success' => true,
+                'message' => 'Document updated successfully',
+                'data' => $doc,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update document: ' . $e->getMessage(),
+            ], 500);
         }
-
-        $doc->update($data);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Document updated successfully',
-            'data' => $doc,
-        ]);
     }
 
     public function destroy(Request $request, $id)
