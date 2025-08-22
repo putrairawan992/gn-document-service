@@ -21,7 +21,7 @@ class DocumentController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Documents retrieved successfully',
-            'data' => Document::paginate(15),
+            'data' => Document::paginate(15)->where('status', '!=', 'deleted'),
         ]);
     }
 
@@ -98,8 +98,9 @@ class DocumentController extends Controller
                 'storage' => $storage,
                 's3_key' => $s3Key,
                 's3_bucket' => $s3Bucket,
-                'status' => $request->input('status'),
-                'created_by' => $request->input('created_by'),
+                'status' => 'active',
+                'created_by' => $user['pk_user_id'],
+                'created_date' => now(),
             ]);
 
             return response()->json([
@@ -173,6 +174,7 @@ class DocumentController extends Controller
                 $data['original_name'] = $file->getClientOriginalName();
             }
 
+            $data['updated_at'] = now();
             $doc->update($data);
 
             return response()->json([
@@ -197,14 +199,9 @@ class DocumentController extends Controller
 
         $doc = Document::findOrFail($id);
 
-        if ($doc->storage === 's3' && $doc->s3_key) {
-            Storage::disk('s3')->delete($doc->s3_key);
-        }
-        if ($doc->path) {
-            Storage::disk('local')->delete($doc->path);
-        }
-
-        $doc->delete();
+        $doc->status = 'deleted';
+        $doc->updated_at = now();
+        $doc->save();
 
         return response()->json([
             'success' => true,
