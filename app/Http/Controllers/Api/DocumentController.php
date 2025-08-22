@@ -33,7 +33,6 @@ class DocumentController extends Controller
         }
 
         $doc = Document::find($id);
-
         if (!$doc) {
             return response()->json(['success' => false, 'message' => 'Document not found'], 404);
         }
@@ -58,61 +57,98 @@ class DocumentController extends Controller
             'storage' => 'in:s3,local',
         ]);
 
-        try {
-            $file = $request->file('file');
-            $originalName = $file->getClientOriginalName();
-            $ext = $file->getClientOriginalExtension();
-            $sizeKb = (int) ceil($file->getSize() / 1024);
-            $storage = $request->input('storage', 's3');
+        $file = $request->file('file');
+        $originalName = $file->getClientOriginalName();
+        $ext = $file->getClientOriginalExtension();
+        $sizeKb = (int) ceil($file->getSize() / 1024);
+        $storage = $request->input('storage', 's3');
 
-            if ($storage === 's3') {
-                $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
-                $uploaded = Storage::disk('s3')->putFileAs(
-                    'documents/'.date('Y/m'),
-                    $file,
-                    Str::random(40).'.'.$ext
-                );
-                $path = null;
-                $s3Key = $uploaded;
+        // ... di dalam store()
+        $path = null;
+        $s3Key = null;
+        $s3Bucket = null;
+        $result = false;
+
+        if ($storage === 's3') {
+            $dir = 'documents/' . date('Y/m');
+            $filename = Str::random(40) . '.' . $ext;
+
+            try {
+                // 1) Upload pakai stream supaya robust
+                $key = rtrim($dir, '/') . '/' . $filename;
+
+                // gunakan writeStream jika tersedia (Laravel 9.32+/10)
+                if (method_exists(Storage::disk('s3'), 'writeStream')) {
+                    $stream = fopen($file->getRealPath(), 'rb');
+                    if ($stream === false) {
+                        throw new \RuntimeException('Cannot open upload temp file stream.');
+                    }
+
+                    Storage::disk('s3')->writeStream($key, $stream, [
+                        'visibility' => 'private', // atau 'public'
+                        'ContentType' => $file->getMimeType() ?: 'application/octet-stream',
+                        'throw' => true,      // minta exception kalau gagal
+                    ]);
+
+                    if (is_resource($stream)) {
+                        fclose($stream);
+                    }
+                } else {
+                    $returned = Storage::disk('s3')->putFileAs($dir, $file, $filename, [
+                        'visibility' => 'private',
+                        'ContentType' => $file->getMimeType() ?: 'application/octet-stream',
+                        'throw' => true,
+                    ]);
+                    $key = is_string($returned) ? $returned : $key;
+                }
+                $exists = Storage::disk('s3')->exists($key);
+                if (!$exists) {
+                    throw new \RuntimeException("Upload reported success but object not found at key: {$key}");
+                }
+
+                $s3Key = $key;
                 $s3Bucket = config('filesystems.disks.s3.bucket');
-            } else {
-                $path = $file->store('documents', ['disk' => 'local']);
-                $s3Key = null;
-                $s3Bucket = null;
+                $result = true;
+            } catch (\Throwable $e) {
+                report($e);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Upload to S3 failed: ' . $e->getMessage(),
+                ], 422);
             }
-
-            $doc = Document::create([
-                'source_id' => $request->input('source_id'),
-                'source_type' => $request->input('source_type'),
-                'document_type' => $request->input('document_type'),
-                'reg_date' => $request->input('reg_date'),
-                'document_no' => $request->input('document_no'),
-                'name' => $request->input('name'),
-                'version_no' => $request->input('version_no'),
-                'size_kb' => $sizeKb,
-                'ext' => $ext,
-                'original_name' => $originalName,
-                'path' => $path,
-                'has_expired' => $request->input('has_expired', false) == true ? 1 : 0,
-                'expired_date' => $request->input('expired_date'),
-                'storage' => $storage,
-                's3_key' => $s3Key,
-                's3_bucket' => $s3Bucket,
-                'status' => $request->input('status'),
-                'created_by' => $request->input('created_by'),
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Document created successfully',
-                'data' => $doc,
-            ], 201);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to create document: ' . $e->getMessage(),
-            ], 500);
+        } else {
+            $path = $file->store('documents', ['disk' => 'local']);
+            $result = (bool) $path;
         }
+
+
+        $doc = Document::create([
+            'source_id' => $request->input('source_id'),
+            'source_type' => $request->input('source_type'),
+            'document_type' => $request->input('document_type'),
+            'reg_date' => $request->input('reg_date'),
+            'document_no' => $request->input('document_no'),
+            'name' => $request->input('name'),
+            'version_no' => $request->input('version_no'),
+            'size_kb' => $sizeKb,
+            'ext' => $ext,
+            'original_name' => $originalName,
+            'path' => $path,
+            'has_expired' => $request->boolean('has_expired') ? 1 : 0,
+            'expired_date' => $request->input('expired_date'),
+            'storage' => $storage,
+            's3_key' => $s3Key,
+            's3_bucket' => $s3Bucket,
+            'status' => $request->input('status'),
+            'created_by' => 0, // sesuaikan
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Document created successfully',
+            'data' => $doc,
+            'result' => $result,
+        ], 201);
     }
 
     public function update(Request $request, $id)
@@ -122,70 +158,68 @@ class DocumentController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthenticated (invalid or expired token)'], 401);
         }
 
-        try {
-            $doc = Document::findOrFail($id);
+        $doc = Document::findOrFail($id);
 
-            $request->validate([
-                'name' => 'sometimes|required|string',
-                'file' => 'sometimes|file',
-                'storage' => 'in:s3,local',
-            ]);
+        $data = $request->only([
+            'name',
+            'document_type',
+            'version_no',
+            'has_expired',
+            'expired_date',
+            'status'
+        ]);
+        if (array_key_exists('has_expired', $data)) {
+            $data['has_expired'] = (bool) $data['has_expired'] ? 1 : 0;
+        }
 
-            $data = $request->only([
-                'name','document_type','version_no','has_expired','expired_date','status'
-            ]);
+        if ($request->hasFile('file')) {
+            $file = $request->file('file');
+            $ext = $file->getClientOriginalExtension();
+            $sizeKb = (int) ceil($file->getSize() / 1024);
 
-            // optional file replace
-            if ($request->hasFile('file')) {
-                $file = $request->file('file');
-                $ext = $file->getClientOriginalExtension();
-                $sizeKb = (int) ceil($file->getSize() / 1024);
-                $storage = $request->input('storage', $doc->storage);
+            if ($doc->storage === 's3') {
+                $dir = 'documents/' . date('Y/m');
+                $filename = Str::random(40) . '.' . $ext;
 
-                // delete old file
-                if ($doc->storage === 's3' && $doc->s3_key) {
-                    Storage::disk('s3')->delete($doc->s3_key);
+                try {
+                    $newKey = Storage::disk('s3')->putFileAs($dir, $file, $filename, [
+                        'visibility' => 'private',
+                        'ContentType' => $file->getMimeType(),
+                        'throw' => true,
+                    ]);
+
+                    // hapus lama setelah yang baru sukses
+                    if ($doc->s3_key) {
+                        Storage::disk('s3')->delete($doc->s3_key);
+                    }
+
+                    $data['s3_key'] = $newKey;
+                } catch (\Throwable $e) {
+                    report($e);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Upload to S3 failed: ' . $e->getMessage(),
+                    ], 422);
                 }
-                if ($doc->storage === 'local' && $doc->path) {
+            } else {
+                if ($doc->path) {
                     Storage::disk('local')->delete($doc->path);
                 }
-
-                if ($storage === 's3') {
-                    $key = 'documents/'.date('Y/m').'/'.Str::random(40).'.'.$ext;
-                    Storage::disk('s3')->putFileAs(
-                        'documents/'.date('Y/m'),
-                        $file,
-                        Str::random(40).'.'.$ext
-                    );
-                    $data['s3_key'] = $key;
-                    $data['s3_bucket'] = config('filesystems.disks.s3.bucket');
-                    $data['path'] = null;
-                } else {
-                    $path = $file->store('documents', ['disk' => 'local']);
-                    $data['path'] = $path;
-                    $data['s3_key'] = null;
-                    $data['s3_bucket'] = null;
-                }
-
-                $data['storage'] = $storage;
-                $data['ext'] = $ext;
-                $data['size_kb'] = $sizeKb;
-                $data['original_name'] = $file->getClientOriginalName();
+                $data['path'] = $file->store('documents', ['disk' => 'local']);
             }
 
-            $doc->update($data);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Document updated successfully',
-                'data' => $doc,
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to update document: ' . $e->getMessage(),
-            ], 500);
+            $data['ext'] = $ext;
+            $data['size_kb'] = $sizeKb;
+            $data['original_name'] = $file->getClientOriginalName();
         }
+
+        $doc->update($data);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Document updated successfully',
+            'data' => $doc,
+        ]);
     }
 
     public function destroy(Request $request, $id)
@@ -213,10 +247,6 @@ class DocumentController extends Controller
         ]);
     }
 
-    /**
-     * Retrieve user session stored in Redis by t-service-user login.
-     * Key format: user_session:{token}
-     */
     private function getUserFromRedis(Request $request)
     {
         $token = $request->bearerToken();
@@ -225,8 +255,6 @@ class DocumentController extends Controller
         }
 
         $key = 'user_session:' . $token;
-
-        // Try using Illuminate Redis facade first, fallback to Predis client if facade not configured
         try {
             $payload = Redis::get($key);
         } catch (\Throwable $e) {
@@ -234,7 +262,7 @@ class DocumentController extends Controller
                 $predis = new \Predis\Client();
                 $payload = $predis->get($key);
             } catch (\Throwable $e) {
-                dd($e);
+                // dd($e); // hindari dd di production
                 $payload = null;
             }
         }
@@ -244,7 +272,6 @@ class DocumentController extends Controller
         }
 
         $data = json_decode($payload, true);
-
         return $data ?: null;
     }
 }
