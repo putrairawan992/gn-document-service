@@ -50,34 +50,25 @@ class DocumentController extends Controller
         if (!$user) {
             return response()->json(['success' => false, 'message' => 'Unauthenticated (invalid or expired token)'], 401);
         }
-
         $request->validate([
             'name' => 'required|string',
             'file' => 'required|file',
             'storage' => 'in:s3,local',
         ]);
-
         $file = $request->file('file');
         $originalName = $file->getClientOriginalName();
         $ext = $file->getClientOriginalExtension();
         $sizeKb = (int) ceil($file->getSize() / 1024);
         $storage = $request->input('storage', 's3');
-
-        // ... di dalam store()
         $path = null;
         $s3Key = null;
         $s3Bucket = null;
         $result = false;
-
         if ($storage === 's3') {
             $dir = 'test/' . date('Y/m');
             $filename = Str::random(40) . '.' . $ext;
-
             try {
-                // 1) Upload pakai stream supaya robust
                 $key = rtrim($dir, '/') . '/' . $filename;
-
-                // gunakan writeStream jika tersedia (Laravel 9.32+/10)
                 if (method_exists(Storage::disk('s3'), 'writeStream')) {
                     $stream = fopen($file->getRealPath(), 'rb');
                     if ($stream === false) {
@@ -85,9 +76,9 @@ class DocumentController extends Controller
                     }
 
                     Storage::disk('s3')->writeStream($key, $stream, [
-                        'visibility' => 'public', // atau 'public'
+                        // 'visibility' => 'public', // atau 'public'
                         'ContentType' => $file->getMimeType() ?: 'application/octet-stream',
-                        'throw' => true,      // minta exception kalau gagal
+                        'throw' => true, 
                     ]);
 
                     if (is_resource($stream)) {
@@ -120,8 +111,6 @@ class DocumentController extends Controller
             $path = $file->store('documents', ['disk' => 'local']);
             $result = (bool) $path;
         }
-
-
         $doc = Document::create([
             'source_id' => $request->input('source_id'),
             'source_type' => $request->input('source_type'),
@@ -140,7 +129,7 @@ class DocumentController extends Controller
             's3_key' => $s3Key,
             's3_bucket' => $s3Bucket,
             'status' => $request->input('status'),
-            'created_by' => 0, // sesuaikan
+            // 'created_by' => 0, // sesuaikan
         ]);
 
         return response()->json([
