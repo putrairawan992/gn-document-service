@@ -70,7 +70,7 @@ class DocumentController extends Controller
         $result = false;
 
         if ($storage === 's3') {
-            $dir = 'documents/' . date('Y/m');
+            $dir = 'test/' . date('Y/m');
             $filename = Str::random(40) . '.' . $ext;
 
             try {
@@ -85,7 +85,7 @@ class DocumentController extends Controller
                     }
 
                     Storage::disk('s3')->writeStream($key, $stream, [
-                        'visibility' => 'private', // atau 'public'
+                        'visibility' => 'public', // atau 'public'
                         'ContentType' => $file->getMimeType() ?: 'application/octet-stream',
                         'throw' => true,      // minta exception kalau gagal
                     ]);
