@@ -2,12 +2,17 @@
 
 use Illuminate\Support\Facades\Route;
 
-use App\Http\Controllers\Api\DocumentController;
+/*
+|--------------------------------------------------------------------------
+| Web Routes
+|--------------------------------------------------------------------------
+|
+| Here is where you can register web routes for your application. These
+| routes are loaded by the RouteServiceProvider within a group which
+| contains the "web" middleware group. Now create something great!
+|
+*/
 
-Route::group(['prefix' => 'v1'], function () {
-    Route::get('documents', [DocumentController::class, 'index']);
-    Route::get('documents/{id}', [DocumentController::class, 'show']);
-    Route::post('documents', [DocumentController::class, 'store']);
-    Route::post('documents/{id}', [DocumentController::class, 'update']);
-    Route::delete('documents/{id}', [DocumentController::class, 'destroy']);
+Route::get('/', function () {
+    return ['Laravel' => app()->version()];
 });
