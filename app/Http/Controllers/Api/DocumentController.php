@@ -245,15 +245,10 @@ class DocumentController extends Controller
 
         $key = 'user_session:' . $token;
         try {
-            $payload = Redis::get($key);
+            $predis = new \Predis\Client();
+            $payload = $predis->get($key);
         } catch (\Throwable $e) {
-            try {
-                $predis = new \Predis\Client();
-                $payload = $predis->get($key);
-            } catch (\Throwable $e) {
-                // dd($e); // hindari dd di production
-                $payload = null;
-            }
+            $payload = null;
         }
 
         if (!$payload) {
@@ -261,6 +256,45 @@ class DocumentController extends Controller
         }
 
         $data = json_decode($payload, true);
-        return $data ?: null;
+        if (!$data || !isset($data['pk_user_id'])) {
+            return null;
+        }
+
+        try {
+            return $data;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    private function getUserIdFromRedis(Request $request)
+    {
+        $token = $request->bearerToken();
+        if (!$token) {
+            return null;
+        }
+
+        $key = 'user_session:' . $token;
+        try {
+            $predis = new \Predis\Client();
+            $payload = $predis->get($key);
+        } catch (\Throwable $e) {
+            $payload = null;
+        }
+
+        if (!$payload) {
+            return null;
+        }
+
+        $data = json_decode($payload, true);
+        if (!$data || !isset($data['pk_user_id'])) {
+            return null;
+        }
+
+        try {
+            return $data['pk_user_id'];
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 }
